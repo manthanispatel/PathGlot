@@ -1,0 +1,39 @@
+import { useStreetView, type StreetViewPosition } from "../hooks/useStreetView";
+import type { City } from "../lib/cities";
+
+interface Props {
+  city: City;
+  onPositionChange?: (position: StreetViewPosition) => void;
+}
+
+export function StreetView({ city, onPositionChange }: Props) {
+  const { containerRef, isLoaded, error } = useStreetView({
+    city,
+    onPositionChange,
+  });
+
+  if (error) {
+    return (
+      <div className="w-full h-full flex items-center justify-center bg-slate-900 text-red-400">
+        <div className="text-center p-8">
+          <div className="text-4xl mb-4">⚠️</div>
+          <div className="font-semibold">{error}</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative w-full h-full">
+      <div ref={containerRef} className="w-full h-full" />
+      {!isLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
+          <div className="text-center">
+            <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <div className="text-slate-400 text-sm">Loading Street View…</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

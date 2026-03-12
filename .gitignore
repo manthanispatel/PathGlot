@@ -1,0 +1,33 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Backend
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+**/__pycache__/
+*.pyc
+
+# Python venv
+venv/
+.venv/
+env/
+
+# Docker
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

@@ -1,0 +1,75 @@
+steps:
+  # Build backend
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '-t'
+      - '$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/backend:$COMMIT_SHA'
+      - './backend'
+
+  # Push backend
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - push
+      - '$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/backend:$COMMIT_SHA'
+
+  # Build frontend
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - '--build-arg'
+      - 'VITE_GOOGLE_MAPS_API_KEY=$_GOOGLE_MAPS_API_KEY'
+      - '--build-arg'
+      - 'VITE_BACKEND_WS_URL=$_BACKEND_WS_URL'
+      - '--target'
+      - 'prod'
+      - '-t'
+      - '$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/frontend:$COMMIT_SHA'
+      - './frontend'
+
+  # Push frontend
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - push
+      - '$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/frontend:$COMMIT_SHA'
+
+  # Deploy backend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - pathglot-backend
+      - '--image=$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/backend:$COMMIT_SHA'
+      - '--platform=managed'
+      - '--region=$_REGION'
+      - '--allow-unauthenticated'
+      - '--set-env-vars=GEMINI_API_KEY=$$GEMINI_API_KEY,GOOGLE_MAPS_API_KEY=$$GOOGLE_MAPS_API_KEY'
+    secretEnv: ['GEMINI_API_KEY', 'GOOGLE_MAPS_API_KEY']
+
+  # Deploy frontend to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - pathglot-frontend
+      - '--image=$_REGION-docker.pkg.dev/$PROJECT_ID/pathglot/frontend:$COMMIT_SHA'
+      - '--platform=managed'
+      - '--region=$_REGION'
+      - '--allow-unauthenticated'
+
+substitutions:
+  _REGION: us-central1
+  _GOOGLE_MAPS_API_KEY: ''
+  _BACKEND_WS_URL: ''
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/gemini-api-key/versions/latest
+      env: GEMINI_API_KEY
+    - versionName: projects/$PROJECT_ID/secrets/google-maps-api-key/versions/latest
+      env: GOOGLE_MAPS_API_KEY
+
+options:
+  logging: CLOUD_LOGGING_ONLY
