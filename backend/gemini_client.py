@@ -1,22 +1,41 @@
-"""Gemini Live session manager."""
+"""Gemini Live session manager with function-calling navigation."""
 
 import asyncio
 import base64
 import os
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Any
 
 from google import genai
 from google.genai import types as genai_types
-
-import re
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Use the December 2025 preview — Google's recommended model for Live API.
 # v1alpha API version unlocks affective dialog and proactive audio.
 GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
-# Pattern to detect navigation commands in agent transcript
-NAVIGATE_PATTERN = re.compile(r"\[NAVIGATE:([-\d.]+),([-\d.]+)\]")
+# Tool declaration for navigation
+NAVIGATE_TOOL = genai_types.Tool(
+    function_declarations=[
+        genai_types.FunctionDeclaration(
+            name="navigate_to_place",
+            description=(
+                "Move the user's Street View to a specific place. "
+                "Call this whenever the user asks to go somewhere or you suggest visiting a place. "
+                "Use a descriptive search query — e.g. 'Shibuya Sky observation deck, Tokyo' or 'Café de Flore, Paris'."
+            ),
+            parameters=genai_types.Schema(
+                type="OBJECT",
+                properties={
+                    "query": genai_types.Schema(
+                        type="STRING",
+                        description="Search query for the place — include the place name and city for best results.",
+                    ),
+                },
+                required=["query"],
+            ),
+        ),
+    ]
+)
 
 
 class GeminiLiveSession:
@@ -30,6 +49,7 @@ class GeminiLiveSession:
         on_transcript: Callable[[str, str], Awaitable[None]],
         on_error: Callable[[str], Awaitable[None]],
         on_navigate: Callable[[str, float, float], Awaitable[None]] | None = None,
+        resolve_place: Callable[[str], Awaitable[dict[str, Any] | None]] | None = None,
     ):
         self.system_prompt = system_prompt
         self.language_code = language_code
@@ -39,6 +59,7 @@ class GeminiLiveSession:
         self.on_transcript = on_transcript
         self.on_error = on_error
         self.on_navigate = on_navigate
+        self.resolve_place = resolve_place
 
         # v1alpha required for enable_affective_dialog and proactivity
         self._client = genai.Client(
@@ -109,6 +130,8 @@ class GeminiLiveSession:
                     end_of_speech_sensitivity=genai_types.EndSensitivity.END_SENSITIVITY_LOW,
                 ),
             ),
+            # Function calling for navigation
+            tools=[NAVIGATE_TOOL],
         )
 
         try:
@@ -188,33 +211,22 @@ class GeminiLiveSession:
                     audio_b64 = base64.b64encode(message.data).decode()
                     await self.on_audio(audio_b64)
 
+                # Handle function calls from Gemini
+                if message.tool_call:
+                    await self._handle_tool_call(session, message.tool_call)
+
                 if message.server_content:
                     # User interrupted the agent — stop playback immediately
                     if message.server_content.interrupted:
                         print(f"[gemini recv] interrupted (turn {turn_num})")
                         await self.on_interrupted()
 
-                    # Output transcript BEFORE turn_complete — if both arrive
-                    # in the same message, the transcript must be appended to
-                    # the current bubble before it gets sealed.
+                    # Output transcript
                     if message.server_content.output_transcription:
                         text = message.server_content.output_transcription.text
                         if text:
-                            # Check for navigation commands in transcript
-                            nav_match = NAVIGATE_PATTERN.search(text)
-                            if nav_match and self.on_navigate:
-                                lat = float(nav_match.group(1))
-                                lng = float(nav_match.group(2))
-                                # Strip the nav tag from displayed transcript
-                                clean_text = NAVIGATE_PATTERN.sub("", text).strip()
-                                print(f"[gemini recv] NAVIGATE to ({lat}, {lng})")
-                                await self.on_navigate("", lat, lng)
-                                if clean_text:
-                                    print(f"[gemini recv] agent: {clean_text!r}")
-                                    await self.on_transcript("agent", clean_text)
-                            else:
-                                print(f"[gemini recv] agent: {text!r}")
-                                await self.on_transcript("agent", text)
+                            print(f"[gemini recv] agent: {text!r}")
+                            await self.on_transcript("agent", text)
 
                     # Turn complete (after transcript)
                     if message.server_content.turn_complete:
@@ -227,3 +239,61 @@ class GeminiLiveSession:
                         if text:
                             print(f"[gemini recv] user: {text!r}")
                             await self.on_transcript("user", text)
+
+    async def _handle_tool_call(self, session, tool_call) -> None:
+        """Execute tool calls from Gemini and send responses back."""
+        responses = []
+
+        for fc in tool_call.function_calls:
+            print(f"[tool_call] {fc.name}({fc.args})")
+
+            if fc.name == "navigate_to_place" and self.resolve_place:
+                query = fc.args.get("query", "")
+                place = await self.resolve_place(query)
+
+                if place and place.get("lat") and place.get("lng"):
+                    # Trigger frontend navigation
+                    if self.on_navigate:
+                        await self.on_navigate(
+                            place.get("name", query),
+                            place["lat"],
+                            place["lng"],
+                        )
+                    responses.append(
+                        genai_types.FunctionResponse(
+                            name=fc.name,
+                            id=fc.id,
+                            response={
+                                "success": True,
+                                "name": place.get("name", ""),
+                                "address": place.get("address", ""),
+                                "summary": place.get("summary", ""),
+                                "rating": place.get("rating"),
+                            },
+                        )
+                    )
+                    print(f"[tool_call] resolved '{query}' → {place['name']} ({place['lat']}, {place['lng']})")
+                else:
+                    responses.append(
+                        genai_types.FunctionResponse(
+                            name=fc.name,
+                            id=fc.id,
+                            response={
+                                "success": False,
+                                "error": f"Could not find a place matching '{query}'. Try a different description.",
+                            },
+                        )
+                    )
+                    print(f"[tool_call] no results for '{query}'")
+            else:
+                responses.append(
+                    genai_types.FunctionResponse(
+                        name=fc.name,
+                        id=fc.id,
+                        response={"error": f"Unknown function: {fc.name}"},
+                    )
+                )
+
+        # Send all responses back to Gemini
+        await session.send_tool_response(function_responses=responses)
+        print(f"[tool_call] sent {len(responses)} tool response(s)")

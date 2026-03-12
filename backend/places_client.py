@@ -85,6 +85,66 @@ async def nearby_search(
     return places
 
 
+PLACES_TEXT_SEARCH_URL = "https://places.googleapis.com/v1/places:searchText"
+
+
+async def text_search(
+    query: str,
+    lat: float,
+    lng: float,
+    language_code: str = "en",
+    radius_meters: int = 5000,
+) -> dict[str, Any] | None:
+    """
+    Search for a specific place by name/query using Text Search (New).
+    Biased toward the user's current location. Returns the top result or None.
+    """
+    if not PLACES_API_KEY:
+        return None
+
+    payload = {
+        "textQuery": query,
+        "locationBias": {
+            "circle": {
+                "center": {"latitude": lat, "longitude": lng},
+                "radius": float(radius_meters),
+            }
+        },
+        "maxResultCount": 1,
+        "languageCode": language_code,
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.displayName,places.formattedAddress,places.location,places.rating,places.editorialSummary",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(PLACES_TEXT_SEARCH_URL, json=payload, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+    except Exception as e:
+        print(f"[places_client] text_search error: {e}")
+        return None
+
+    places = data.get("places", [])
+    if not places:
+        return None
+
+    p = places[0]
+    loc = p.get("location", {})
+    return {
+        "name": p.get("displayName", {}).get("text", ""),
+        "address": p.get("formattedAddress", ""),
+        "rating": p.get("rating"),
+        "summary": p.get("editorialSummary", {}).get("text", ""),
+        "lat": loc.get("latitude"),
+        "lng": loc.get("longitude"),
+    }
+
+
 def haversine_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Calculate distance in meters between two lat/lng points."""
     R = 6371000

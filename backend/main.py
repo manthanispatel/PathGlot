@@ -20,7 +20,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from gemini_client import GeminiLiveSession
-from places_client import nearby_search, haversine_distance
+from places_client import nearby_search, text_search, haversine_distance
 from context_builder import build_location_update
 from language_config import build_system_prompt
 
@@ -134,6 +134,15 @@ async def session_endpoint(
         except Exception as e:
             print(f"[ws] ERROR sending navigate: {e}")
 
+    last_position: tuple[float, float] | None = None
+
+    async def resolve_place(query: str) -> dict | None:
+        """Called by Gemini tool call — resolve a place by name via Text Search."""
+        # Use the user's current position for location bias (falls back to 0,0)
+        lat, lng = last_position or (0.0, 0.0)
+        print(f"[resolve_place] query={query!r}  bias=({lat}, {lng})")
+        return await text_search(query, lat, lng, language_code=lang)
+
     gemini = GeminiLiveSession(
         system_prompt=system_prompt,
         language_code=lang,
@@ -143,6 +152,7 @@ async def session_endpoint(
         on_transcript=on_transcript,
         on_error=on_error,
         on_navigate=on_navigate,
+        resolve_place=resolve_place,
     )
 
     try:
@@ -157,7 +167,6 @@ async def session_endpoint(
         await websocket.close()
         return
 
-    last_position: tuple[float, float] | None = None
     mic_chunk_count = 0
 
     try:
