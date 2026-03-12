@@ -59,6 +59,11 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/config")
+async def config():
+    return {"mapsApiKey": os.environ.get("GOOGLE_MAPS_API_KEY", "")}
+
+
 @app.websocket("/ws/session")
 async def session_endpoint(
     websocket: WebSocket,

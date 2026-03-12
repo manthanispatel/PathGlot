@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { AudioPlayer, float32ToBase64Pcm, resample, CAPTURE_SAMPLE_RATE } from "../lib/audio";
 import type { City } from "../lib/cities";
 
-const BACKEND_WS_URL =
-  (import.meta.env.VITE_BACKEND_WS_URL as string) || "ws://localhost:8000";
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL as string | undefined) || "http://localhost:8000";
+const BACKEND_WS_URL = BACKEND_URL.replace(/^http/, "ws");
 
 export type SessionStatus =
   | "idle"

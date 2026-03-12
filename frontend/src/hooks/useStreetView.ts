@@ -15,13 +15,25 @@ interface UseStreetViewOptions {
   onPositionChange?: (position: StreetViewPosition) => void;
 }
 
-const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string;
+const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL as string | undefined) || "http://localhost:8000";
 
 let loaderInstance: Loader | null = null;
-function getMapsLoader() {
+let mapsKeyPromise: Promise<string> | null = null;
+
+function getMapsApiKey(): Promise<string> {
+  if (!mapsKeyPromise) {
+    mapsKeyPromise = fetch(`${BACKEND_URL}/config`)
+      .then((r) => r.json())
+      .then((d) => d.mapsApiKey as string);
+  }
+  return mapsKeyPromise;
+}
+
+async function getMapsLoader(): Promise<Loader> {
   if (!loaderInstance) {
+    const apiKey = await getMapsApiKey();
     loaderInstance = new Loader({
-      apiKey: MAPS_API_KEY,
+      apiKey,
       version: "weekly",
       libraries: ["maps", "streetView"],
     });
@@ -47,7 +59,7 @@ export function useStreetView({ city, onPositionChange }: UseStreetViewOptions) 
     let cancelled = false;
 
     getMapsLoader()
-      .importLibrary("streetView")
+      .then((loader) => loader.importLibrary("streetView"))
       .then(() => {
         if (cancelled || !container) return;
 
