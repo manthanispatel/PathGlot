@@ -29,7 +29,7 @@ export function StreetView({ city, onPositionChange }: Props) {
       {!isLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-900">
           <div className="text-center">
-            <div className="w-8 h-8 border-2 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
+            <div className="w-8 h-8 border-2 border-zinc-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
             <div className="text-slate-400 text-sm">Loading Street View…</div>
           </div>
         </div>

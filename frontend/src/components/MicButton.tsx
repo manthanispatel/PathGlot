@@ -21,7 +21,7 @@ export function MicButton({
         className={`
           relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-200 shadow-lg
           ${!isConnected ? "bg-white/10 cursor-not-allowed" : ""}
-          ${isConnected && !isMicActive ? "bg-brand-500 hover:bg-brand-600 hover:scale-105 active:scale-95 shadow-brand-500/40" : ""}
+          ${isConnected && !isMicActive ? "bg-white hover:bg-zinc-200 hover:scale-105 active:scale-95 shadow-white/20" : ""}
           ${isMicActive ? "bg-red-500 hover:bg-red-600 shadow-red-500/40 hover:scale-105 active:scale-95" : ""}
         `}
         title={
@@ -35,7 +35,7 @@ export function MicButton({
         {/* Mic icon */}
         {!isMicActive ? (
           <svg
-            className="w-7 h-7 text-white"
+            className={`w-7 h-7 ${isConnected ? "text-black" : "text-white"}`}
             fill="none"
             viewBox="0 0 24 24"
             stroke="currentColor"

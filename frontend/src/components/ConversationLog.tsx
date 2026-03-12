@@ -17,7 +17,7 @@ export function ConversationLog({ transcript, isOpen, onClose }: Props) {
   if (!isOpen) return null;
 
   return (
-    <div className="absolute right-0 top-0 h-full w-80 glass-card rounded-none border-l border-white/10 flex flex-col z-20">
+    <div className="absolute right-0 top-0 h-full w-80 bg-zinc-900/95 backdrop-blur-sm rounded-none border-l border-zinc-800 flex flex-col z-20">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
         <h3 className="font-semibold text-sm text-white">Conversation</h3>
@@ -48,7 +48,7 @@ export function ConversationLog({ transcript, isOpen, onClose }: Props) {
                   max-w-[85%] rounded-2xl px-3 py-2 text-sm
                   ${
                     turn.role === "user"
-                      ? "bg-brand-500/80 text-white rounded-br-sm"
+                      ? "bg-white/20 text-white rounded-br-sm"
                       : "bg-white/10 text-slate-200 rounded-bl-sm"
                   }
                   ${turn.pending ? "opacity-60 italic" : ""}
