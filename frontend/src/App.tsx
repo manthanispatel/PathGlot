@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { LanguageCitySelector } from "./components/LanguageCitySelector";
+import { LanguageCitySelector } from "./components/LandingPage";
 import { StreetView } from "./components/StreetView";
 import { MicButton } from "./components/MicButton";
 import { ConversationLog } from "./components/ConversationLog";
@@ -90,9 +90,9 @@ export default function App() {
 
   // Main session view
   return (
-    <div className="h-screen flex flex-col bg-[#0c1117] overflow-hidden">
+    <div className="h-screen flex flex-col bg-[#09090b] overflow-hidden">
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-black/40 backdrop-blur-sm border-b border-white/10 z-10 shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 bg-black/60 backdrop-blur-sm border-b border-zinc-800 z-10 shrink-0">
         <div className="flex items-center gap-3">
           <button
             onClick={handleEnd}
