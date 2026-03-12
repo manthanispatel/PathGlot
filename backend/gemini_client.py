@@ -19,6 +19,7 @@ class GeminiLiveSession:
         language_code: str,
         on_audio: Callable[[str], Awaitable[None]],
         on_audio_end: Callable[[], Awaitable[None]],
+        on_interrupted: Callable[[], Awaitable[None]],
         on_transcript: Callable[[str, str], Awaitable[None]],
         on_error: Callable[[str], Awaitable[None]],
     ):
@@ -26,6 +27,7 @@ class GeminiLiveSession:
         self.language_code = language_code
         self.on_audio = on_audio
         self.on_audio_end = on_audio_end
+        self.on_interrupted = on_interrupted
         self.on_transcript = on_transcript
         self.on_error = on_error
 
@@ -76,15 +78,24 @@ class GeminiLiveSession:
                     )
                 )
             ),
-            input_audio_transcription=genai_types.AudioTranscriptionConfig(),
             output_audio_transcription=genai_types.AudioTranscriptionConfig(),
+            # Disable thinking — when active it generates text/thought responses
+            # instead of audio, ignoring response_modalities=["AUDIO"]
+            thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+            # Ensure VAD stays active across turns so the model keeps listening
+            # after each response instead of waiting for explicit turn signals.
+            realtime_input_config=genai_types.RealtimeInputConfig(
+                automatic_activity_detection=genai_types.AutomaticActivityDetection(
+                    disabled=False,
+                ),
+            ),
         )
 
         try:
             async with self._client.aio.live.connect(
                 model=GEMINI_MODEL, config=config
             ) as session:
-                # Run sender and receiver concurrently inside the context
+                # Run sender and receiver concurrently
                 await asyncio.gather(
                     self._send_loop(session),
                     self._receive_loop(session),
@@ -97,12 +108,16 @@ class GeminiLiveSession:
 
     async def _send_loop(self, session) -> None:
         """Forward audio and context messages to Gemini."""
+        send_count = 0
         while not self._closed:
             # Check context queue first (non-blocking)
             try:
                 ctx = self._context_queue.get_nowait()
                 if ctx is None:
                     return
+                # Inject context WITHOUT turn_complete so it doesn't interfere
+                # with VAD-based turn management. The context enriches future
+                # responses without forcing a turn boundary.
                 await session.send_client_content(
                     turns=genai_types.Content(
                         role="user",
@@ -110,6 +125,7 @@ class GeminiLiveSession:
                     ),
                     turn_complete=False,
                 )
+                print(f"[send_loop] injected context (no turn_complete)")
                 continue
             except asyncio.QueueEmpty:
                 pass
@@ -120,38 +136,59 @@ class GeminiLiveSession:
                 if chunk is None:
                     return
                 audio_bytes = base64.b64decode(chunk)
-                await session.send_realtime_input(
-                    audio=genai_types.Blob(
-                        data=audio_bytes,
-                        mime_type="audio/pcm;rate=16000",
+                try:
+                    await session.send_realtime_input(
+                        media=genai_types.Blob(
+                            data=audio_bytes,
+                            mime_type="audio/pcm;rate=16000",
+                        )
                     )
-                )
+                    send_count += 1
+                    if send_count % 50 == 1:
+                        print(f"[send_loop] sent audio #{send_count} to gemini ({len(audio_bytes)} bytes)")
+                except Exception as e:
+                    print(f"[send_loop] ERROR sending audio: {e}")
+                    raise
             except asyncio.TimeoutError:
                 continue
+        print("[send_loop] exited loop")
 
     async def _receive_loop(self, session) -> None:
         """Receive and dispatch messages from Gemini."""
-        async for message in session.receive():
-            if self._closed:
-                break
+        turn_num = 0
+        while not self._closed:
+            turn_num += 1
+            print(f"[receive_loop] listening for turn {turn_num}")
+            async for message in session.receive():
+                if self._closed:
+                    return
 
-            # Audio output
-            if message.data:
-                audio_b64 = base64.b64encode(message.data).decode()
-                await self.on_audio(audio_b64)
+                # Audio output
+                if message.data:
+                    audio_b64 = base64.b64encode(message.data).decode()
+                    await self.on_audio(audio_b64)
 
-            # Turn complete
-            if message.server_content and message.server_content.turn_complete:
-                await self.on_audio_end()
+                if message.server_content:
+                    # User interrupted the agent — stop playback immediately
+                    if message.server_content.interrupted:
+                        print(f"[gemini recv] interrupted (turn {turn_num})")
+                        await self.on_interrupted()
 
-            # Output transcript (agent speech → text)
-            if message.server_content and message.server_content.output_transcription:
-                text = message.server_content.output_transcription.text
-                if text:
-                    await self.on_transcript("agent", text)
+                    # Turn complete
+                    if message.server_content.turn_complete:
+                        print(f"[gemini recv] turn_complete (turn {turn_num})")
+                        await self.on_audio_end()
 
-            # Input transcript (user speech → text)
-            if message.server_content and message.server_content.input_transcription:
-                text = message.server_content.input_transcription.text
-                if text:
-                    await self.on_transcript("user", text)
+                    # Output transcript (agent speech → text)
+                    if message.server_content.output_transcription:
+                        text = message.server_content.output_transcription.text
+                        if text:
+                            print(f"[gemini recv] agent: {text!r}")
+                            await self.on_transcript("agent", text)
+
+                    # Input transcript — just log, don't send to client
+                    # (Gemini guesses the wrong language for input STT)
+                    if message.server_content.input_transcription:
+                        text = message.server_content.input_transcription.text
+                        if text:
+                            print(f"[gemini recv] user: {text!r}")

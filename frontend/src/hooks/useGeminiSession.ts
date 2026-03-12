@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { AudioPlayer, float32ToBase64Pcm, resample, CAPTURE_SAMPLE_RATE } from "../lib/audio";
+import { AudioPlayer, float32ToBase64Pcm, CAPTURE_SAMPLE_RATE } from "../lib/audio";
 import type { City } from "../lib/cities";
 
 const BACKEND_URL = (import.meta.env.VITE_BACKEND_URL as string | undefined) || "http://localhost:8000";
@@ -89,17 +89,38 @@ export function useGeminiSession({
         setIsAgentSpeaking(false);
         break;
 
-      case "transcript":
-        setTranscript((prev) => [
-          ...prev,
-          {
-            id: crypto.randomUUID(),
-            role: msg.role,
-            text: msg.text,
-            timestamp: Date.now(),
-          },
-        ]);
+      case "interrupted":
+        // User barged in — kill buffered audio so the agent's old speech
+        // doesn't keep playing over the new response.
+        audioPlayerRef.current?.stop();
+        setIsAgentSpeaking(false);
         break;
+
+      case "transcript": {
+        // Accumulate fragments into the current turn instead of creating
+        // a new bubble for every word Gemini streams.
+        setTranscript((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === msg.role) {
+            const updated = [...prev];
+            updated[updated.length - 1] = {
+              ...last,
+              text: last.text + msg.text,
+            };
+            return updated;
+          }
+          return [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: msg.role,
+              text: msg.text,
+              timestamp: Date.now(),
+            },
+          ];
+        });
+        break;
+      }
 
       case "error":
         setError(msg.message);
@@ -128,33 +149,38 @@ export function useGeminiSession({
       });
 
       micStreamRef.current = stream;
-      const ctx = new AudioContext();
+      // Create AudioContext at exactly 16kHz — Chrome resamples the mic stream
+      // to this rate internally using a high-quality resampler, which is far
+      // better than our manual linear interpolation and eliminates the
+      // "h-e-l-l-o" character-by-character transcription artifact.
+      const ctx = new AudioContext({ sampleRate: CAPTURE_SAMPLE_RATE });
       audioContextRef.current = ctx;
 
       const source = ctx.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // Use ScriptProcessorNode for broad browser support
-      // Buffer size 4096 at 48kHz = ~85ms, gives ~20 chunks/sec at 16kHz
+      // 4096 frames at 16kHz = 256ms chunks — large enough for clean VAD
       const processor = ctx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       processor.onaudioprocess = (e) => {
         if (wsRef.current?.readyState !== WebSocket.OPEN) return;
-        const inputData = e.inputBuffer.getChannelData(0);
-        const resampled = resample(
-          inputData,
-          ctx.sampleRate,
-          CAPTURE_SAMPLE_RATE
-        );
-        const base64 = float32ToBase64Pcm(resampled);
+        // Browser echoCancellation handles feedback — always send mic audio so
+        // Gemini's VAD stays active across turns and barge-in works.
+        const base64 = float32ToBase64Pcm(e.inputBuffer.getChannelData(0));
         wsRef.current.send(
           JSON.stringify({ type: "audio", data: base64 })
         );
       };
 
+      // Connect through a muted GainNode — Chrome requires a path to destination
+      // for ScriptProcessorNode to run, but we don't want mic audio in speakers
+      // (it would create an echo loop back into Gemini).
+      const muteNode = ctx.createGain();
+      muteNode.gain.value = 0;
       source.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(muteNode);
+      muteNode.connect(ctx.destination);
       setIsMicActive(true);
     } catch (err) {
       setError(
@@ -231,6 +257,10 @@ interface AudioEndMessage {
   type: "audio_end";
 }
 
+interface InterruptedMessage {
+  type: "interrupted";
+}
+
 interface TranscriptMessage {
   type: "transcript";
   role: "user" | "agent";
@@ -250,6 +280,7 @@ interface StatusMessage {
 type BackendMessage =
   | AudioMessage
   | AudioEndMessage
+  | InterruptedMessage
   | TranscriptMessage
   | ErrorMessage
   | StatusMessage;
