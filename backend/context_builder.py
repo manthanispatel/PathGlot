@@ -41,7 +41,7 @@ def build_location_update(
         f"Naturally acknowledge this location change in {_language_name(language_code)} "
         f"and weave in some of these nearby places into your commentary. "
         f"Only mention places you are confident about from this list. "
-        f"If the user wants to visit a place, use the navigate_to_place tool with its coordinates to take them there."
+        f"If the user wants to visit a place, include [NAVIGATE:lat,lng] in your response to move them there."
     )
 
 

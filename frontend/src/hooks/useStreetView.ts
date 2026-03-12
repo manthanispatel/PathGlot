@@ -73,9 +73,7 @@ export function useStreetView({ city, onPositionChange }: UseStreetViewOptions) 
           motionTrackingControl: false,
           showRoadLabels: true,
           clickToGo: true,
-          // Prefer outdoor-only imagery to keep user on streets
-          source: google.maps.StreetViewSource.OUTDOOR,
-        } as google.maps.StreetViewPanoramaOptions);
+        });
 
         panoramaRef.current = panorama;
 
@@ -121,7 +119,39 @@ export function useStreetView({ city, onPositionChange }: UseStreetViewOptions) 
   }, [city.lat, city.lng, city.heading, city.pitch, city.name]);
 
   const moveTo = useCallback((lat: number, lng: number) => {
-    panoramaRef.current?.setPosition({ lat, lng });
+    const pano = panoramaRef.current;
+    if (!pano) return;
+
+    const sv = new google.maps.StreetViewService();
+    // Try outdoor first within 200m
+    sv.getPanorama(
+      {
+        location: { lat, lng },
+        radius: 200,
+        preference: google.maps.StreetViewPreference.NEAREST,
+        source: google.maps.StreetViewSource.OUTDOOR,
+      } as google.maps.StreetViewLocationRequest,
+      (data, status) => {
+        if (status === google.maps.StreetViewStatus.OK && data?.location?.latLng) {
+          pano.setPano(data.location.pano);
+        } else {
+          // Fallback: any panorama (including indoor) within 200m
+          sv.getPanorama(
+            {
+              location: { lat, lng },
+              radius: 200,
+              preference: google.maps.StreetViewPreference.NEAREST,
+            },
+            (data2, status2) => {
+              if (status2 === google.maps.StreetViewStatus.OK && data2?.location?.latLng) {
+                pano.setPano(data2.location.pano);
+              }
+              // If nothing found, don't move at all — better than breaking the view
+            }
+          );
+        }
+      }
+    );
   }, []);
 
   return { containerRef, isLoaded, error, panorama: panoramaRef, moveTo };

@@ -8,38 +8,15 @@ from typing import Callable, Awaitable
 from google import genai
 from google.genai import types as genai_types
 
+import re
+
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 # Use the December 2025 preview — Google's recommended model for Live API.
 # v1alpha API version unlocks affective dialog and proactive audio.
 GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 
-
-NAVIGATE_TOOL = genai_types.FunctionDeclaration(
-    name="navigate_to_place",
-    description=(
-        "Move the user's Street View camera to a specific place. "
-        "Use this when the user wants to see a place, or when you suggest visiting somewhere nearby. "
-        "You MUST provide the latitude and longitude coordinates from the location update data."
-    ),
-    parameters_json_schema={
-        "type": "object",
-        "properties": {
-            "place_name": {
-                "type": "string",
-                "description": "Name of the place to navigate to",
-            },
-            "latitude": {
-                "type": "number",
-                "description": "Latitude coordinate of the place",
-            },
-            "longitude": {
-                "type": "number",
-                "description": "Longitude coordinate of the place",
-            },
-        },
-        "required": ["place_name", "latitude", "longitude"],
-    },
-)
+# Pattern to detect navigation commands in agent transcript
+NAVIGATE_PATTERN = re.compile(r"\[NAVIGATE:([-\d.]+),([-\d.]+)\]")
 
 
 class GeminiLiveSession:
@@ -107,7 +84,6 @@ class GeminiLiveSession:
         config = genai_types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=self.system_prompt,
-            tools=[genai_types.Tool(function_declarations=[NAVIGATE_TOOL])],
             speech_config=genai_types.SpeechConfig(
                 voice_config=genai_types.VoiceConfig(
                     prebuilt_voice_config=genai_types.PrebuiltVoiceConfig(
@@ -212,33 +188,6 @@ class GeminiLiveSession:
                     audio_b64 = base64.b64encode(message.data).decode()
                     await self.on_audio(audio_b64)
 
-                # Tool call — Gemini wants to invoke a function
-                if message.tool_call:
-                    for fc in message.tool_call.function_calls:
-                        print(f"[gemini recv] tool_call: {fc.name}({fc.args})")
-                        if fc.name == "navigate_to_place" and self.on_navigate:
-                            place_name = fc.args.get("place_name", "")
-                            lat = fc.args.get("latitude", 0.0)
-                            lng = fc.args.get("longitude", 0.0)
-                            await self.on_navigate(place_name, lat, lng)
-                            # Respond to Gemini so it knows navigation happened
-                            await session.send_tool_response(
-                                function_responses=genai_types.FunctionResponse(
-                                    name="navigate_to_place",
-                                    response={"status": "success", "message": f"Navigated to {place_name}"},
-                                    id=fc.id,
-                                )
-                            )
-                        else:
-                            # Unknown tool — respond with error
-                            await session.send_tool_response(
-                                function_responses=genai_types.FunctionResponse(
-                                    name=fc.name,
-                                    response={"error": f"Unknown function: {fc.name}"},
-                                    id=fc.id,
-                                )
-                            )
-
                 if message.server_content:
                     # User interrupted the agent — stop playback immediately
                     if message.server_content.interrupted:
@@ -251,8 +200,21 @@ class GeminiLiveSession:
                     if message.server_content.output_transcription:
                         text = message.server_content.output_transcription.text
                         if text:
-                            print(f"[gemini recv] agent: {text!r}")
-                            await self.on_transcript("agent", text)
+                            # Check for navigation commands in transcript
+                            nav_match = NAVIGATE_PATTERN.search(text)
+                            if nav_match and self.on_navigate:
+                                lat = float(nav_match.group(1))
+                                lng = float(nav_match.group(2))
+                                # Strip the nav tag from displayed transcript
+                                clean_text = NAVIGATE_PATTERN.sub("", text).strip()
+                                print(f"[gemini recv] NAVIGATE to ({lat}, {lng})")
+                                await self.on_navigate("", lat, lng)
+                                if clean_text:
+                                    print(f"[gemini recv] agent: {clean_text!r}")
+                                    await self.on_transcript("agent", clean_text)
+                            else:
+                                print(f"[gemini recv] agent: {text!r}")
+                                await self.on_transcript("agent", text)
 
                     # Turn complete (after transcript)
                     if message.server_content.turn_complete:
