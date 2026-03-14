@@ -15,12 +15,12 @@ const GEO_DETAIL = 28; // icosahedron detail — balance between low-poly look a
 
 // ISO 3166-1 numeric → language code
 const COUNTRY_LANG: Record<string, string> = {
-  "724": "es", "032": "es",
-  "250": "fr", "124": "fr",
-  "276": "de", "040": "de",
-  "392": "ja",
-  "380": "it",
-  "620": "pt", "076": "pt",
+  "724": "es", // Spain
+  "250": "fr", // France
+  "276": "de", // Germany
+  "392": "ja", // Japan
+  "380": "it", // Italy
+  "620": "pt", // Portugal
 };
 
 // Vibrant country fills — saturated for the supported countries
