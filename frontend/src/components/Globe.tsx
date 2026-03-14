@@ -70,9 +70,8 @@ function latLngToVec3(lat: number, lng: number, r: number): THREE.Vector3 {
   );
 }
 
-function lngToRotY(lng: number): number {
-  return (lng * Math.PI) / 180 - Math.PI / 2;
-}
+
+
 
 function angleDiff(from: number, to: number): number {
   let d = ((to - from) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
@@ -463,22 +462,60 @@ function GlobeMesh({ selectedLanguageCode, onLanguageClick, zoomTarget }: GlobeM
   }, []);
 
   const zoomStart = useRef<number | null>(null);
+  const zoomInitialCamPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 5));
+  const zoomTargetCamPos = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 5));
 
-  useFrame(({ clock }, delta) => {
+  useFrame(({ clock }) => {
     if (!groupRef.current) return;
 
     if (zoomTarget) {
-      // ── Zoom transition — OrbitControls disabled, safe to touch camera ──
-      if (zoomStart.current === null) zoomStart.current = clock.getElapsedTime();
+      if (zoomStart.current === null) {
+        zoomStart.current = clock.getElapsedTime();
+        zoomInitialCamPos.current = camera.position.clone();
+
+        // Compute target camera position:
+        // Get the 3D surface position of the target on the globe.
+        // The globe group may have been rotated by user dragging (OrbitControls
+        // moves camera, not group, but just in case), so use unrotated coords.
+        // The flag pins use the same latLngToVec3 and they display correctly,
+        // so we know this function gives the right world position (before group rot).
+        const surfacePos = latLngToVec3(zoomTarget.lat, zoomTarget.lng, RADIUS);
+        // The direction from origin toward that point is where the camera should be.
+        // Place camera along that direction, at our desired zoom distance.
+        const dir = surfacePos.clone().normalize();
+        const zoomDist = 2.8;
+        zoomTargetCamPos.current = dir.multiplyScalar(zoomDist);
+      }
+
       const elapsed = clock.getElapsedTime() - zoomStart.current;
-      const t = Math.min(elapsed / 1.0, 1);
-      const ease = 1 - Math.pow(1 - t, 3);
+      const duration = 1.2;
+      const t = Math.min(elapsed / duration, 1);
+      const ease = 1 - Math.pow(1 - t, 3); // cubic ease-out
 
-      const targetY = lngToRotY(zoomTarget.lng);
-      const diff = angleDiff(groupRef.current.rotation.y, targetY);
-      groupRef.current.rotation.y += diff * Math.min(ease * 5 * delta, 0.15);
+      // Spherical interpolation from initial camera pos to target camera pos
+      // This creates a smooth arc rather than a linear cut-through-the-globe path
+      const startDir = zoomInitialCamPos.current.clone().normalize();
+      const endDir = zoomTargetCamPos.current.clone().normalize();
 
-      camera.position.z += (2.2 - camera.position.z) * ease * delta * 4;
+      // Slerp the direction
+      const qStart = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        startDir
+      );
+      const qEnd = new THREE.Quaternion().setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        endDir
+      );
+      const qCurrent = qStart.clone().slerp(qEnd, ease);
+      const currentDir = new THREE.Vector3(0, 0, 1).applyQuaternion(qCurrent);
+
+      // Lerp the distance
+      const startDist = zoomInitialCamPos.current.length();
+      const endDist = zoomTargetCamPos.current.length();
+      const currentDist = startDist + (endDist - startDist) * ease;
+
+      camera.position.copy(currentDir.multiplyScalar(currentDist));
+      camera.lookAt(0, 0, 0);
     } else {
       zoomStart.current = null;
     }
