@@ -62,7 +62,7 @@ const FLAG_PINS: Array<{
 
 function latLngToVec3(lat: number, lng: number, r: number): THREE.Vector3 {
   const phi = (90 - lat) * (Math.PI / 180);
-  const theta = (lng + 180) * (Math.PI / 180);
+  const theta = lng * (Math.PI / 180);
   return new THREE.Vector3(
     -(r * Math.sin(phi) * Math.cos(theta)),
     r * Math.cos(phi),
@@ -71,7 +71,7 @@ function latLngToVec3(lat: number, lng: number, r: number): THREE.Vector3 {
 }
 
 function lngToRotY(lng: number): number {
-  return -Math.PI / 2 - (lng * Math.PI) / 180;
+  return (lng * Math.PI) / 180 - Math.PI / 2;
 }
 
 function angleDiff(from: number, to: number): number {
