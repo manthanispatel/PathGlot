@@ -1,88 +1,380 @@
-import { useRef, useMemo, useState } from "react";
-import { Canvas, useFrame } from "@react-three/fiber";
+import { useRef, useMemo, useState, useEffect } from "react";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
-import { LANGUAGES } from "../lib/cities";
+import { geoPath, geoEquirectangular, type GeoPermissibleObjects } from "d3-geo";
+import * as topojson from "topojson-client";
+import type { GeometryCollection } from "topojson-specification";
+import worldAtlas from "world-atlas/countries-110m.json";
 
-// Convert lat/lng to 3D sphere coordinates
-function latLngToVector3(
-  lat: number,
-  lng: number,
-  radius: number
-): THREE.Vector3 {
+// ── Constants ──
+
+const RADIUS = 1.6;
+const EXTRUDE = 0.055; // how much land is raised above ocean
+const GEO_DETAIL = 28; // icosahedron detail — balance between low-poly look and continent accuracy
+
+// ISO 3166-1 numeric → language code
+const COUNTRY_LANG: Record<string, string> = {
+  "724": "es", "032": "es",
+  "250": "fr", "124": "fr",
+  "276": "de", "040": "de",
+  "392": "ja",
+  "380": "it",
+  "620": "pt", "076": "pt",
+};
+
+// Vibrant country fills — saturated for the supported countries
+const LANG_FILL: Record<string, string> = {
+  es: "#ef4444",
+  fr: "#3b82f6",
+  de: "#eab308",
+  ja: "#f43f5e",
+  it: "#22c55e",
+  pt: "#a855f7",
+};
+
+// Glow border color for supported countries
+const LANG_STROKE: Record<string, string> = {
+  es: "#fca5a5",
+  fr: "#93c5fd",
+  de: "#fde047",
+  ja: "#fda4af",
+  it: "#86efac",
+  pt: "#c4b5fd",
+};
+
+// Flag positions — spread apart, staggered heights
+const FLAG_PINS: Array<{
+  code: string;
+  lat: number;
+  lng: number;
+  poleH: number;
+}> = [
+  { code: "es", lat: 38, lng: -4, poleH: 0.38 },
+  { code: "fr", lat: 47, lng: 2, poleH: 0.46 },
+  { code: "de", lat: 52, lng: 10, poleH: 0.42 },
+  { code: "ja", lat: 36, lng: 138, poleH: 0.40 },
+  { code: "it", lat: 42, lng: 13, poleH: 0.35 },
+  { code: "pt", lat: 39, lng: -9, poleH: 0.33 },
+];
+
+// ── Coordinate helpers ──
+
+function latLngToVec3(lat: number, lng: number, r: number): THREE.Vector3 {
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = (lng + 180) * (Math.PI / 180);
   return new THREE.Vector3(
-    -(radius * Math.sin(phi) * Math.cos(theta)),
-    radius * Math.cos(phi),
-    radius * Math.sin(phi) * Math.sin(theta)
+    -(r * Math.sin(phi) * Math.cos(theta)),
+    r * Math.cos(phi),
+    r * Math.sin(phi) * Math.sin(theta)
   );
 }
 
-// Generate evenly-distributed dots on a sphere surface
-function generateGlobeDots(count: number, radius: number): Float32Array {
-  const positions = new Float32Array(count * 3);
-  // Use fibonacci sphere for even distribution
-  const goldenRatio = (1 + Math.sqrt(5)) / 2;
-  for (let i = 0; i < count; i++) {
-    const theta = (2 * Math.PI * i) / goldenRatio;
-    const phi = Math.acos(1 - (2 * (i + 0.5)) / count);
-    const x = radius * Math.sin(phi) * Math.cos(theta);
-    const y = radius * Math.cos(phi);
-    const z = radius * Math.sin(phi) * Math.sin(theta);
-    positions[i * 3] = x;
-    positions[i * 3 + 1] = y;
-    positions[i * 3 + 2] = z;
-  }
-  return positions;
+function lngToRotY(lng: number): number {
+  return -Math.PI / 2 - (lng * Math.PI) / 180;
 }
 
-interface CityMarkerProps {
+function angleDiff(from: number, to: number): number {
+  let d = ((to - from) % (Math.PI * 2) + Math.PI * 3) % (Math.PI * 2) - Math.PI;
+  return d;
+}
+
+// ── Earth textures (color + displacement) ──
+
+function createEarthTextures(w: number, h: number): {
+  color: HTMLCanvasElement;
+  displacement: HTMLCanvasElement;
+} {
+  const countries = topojson.feature(
+    worldAtlas as any,
+    (worldAtlas as any).objects.countries as GeometryCollection
+  );
+
+  const proj = geoEquirectangular()
+    .scale(w / (2 * Math.PI))
+    .translate([w / 2, h / 2]);
+
+  // ── Color texture ──
+  const colorCanvas = document.createElement("canvas");
+  colorCanvas.width = w;
+  colorCanvas.height = h;
+  const cCtx = colorCanvas.getContext("2d")!;
+
+  // Ocean — deep vibrant blue
+  cCtx.fillStyle = "#1d4ed8";
+  cCtx.fillRect(0, 0, w, h);
+
+  // Subtle ocean grid
+  const colorPath = geoPath(proj, cCtx);
+  cCtx.strokeStyle = "rgba(59, 130, 246, 0.2)";
+  cCtx.lineWidth = 0.5;
+  for (let lat = -80; lat <= 80; lat += 20) {
+    cCtx.beginPath();
+    colorPath({
+      type: "LineString",
+      coordinates: Array.from({ length: 361 }, (_, i) => [i - 180, lat]),
+    } as GeoPermissibleObjects);
+    cCtx.stroke();
+  }
+  for (let lng = -180; lng < 180; lng += 20) {
+    cCtx.beginPath();
+    colorPath({
+      type: "LineString",
+      coordinates: Array.from({ length: 181 }, (_, i) => [lng, i - 90]),
+    } as GeoPermissibleObjects);
+    cCtx.stroke();
+  }
+
+  // Glow pass for supported countries
+  cCtx.save();
+  cCtx.filter = "blur(10px)";
+  for (const f of countries.features) {
+    const lang = COUNTRY_LANG[String(f.id)];
+    if (!lang) continue;
+    cCtx.beginPath();
+    colorPath(f as GeoPermissibleObjects);
+    cCtx.fillStyle = LANG_FILL[lang];
+    cCtx.globalAlpha = 0.4;
+    cCtx.fill();
+  }
+  cCtx.restore();
+  cCtx.globalAlpha = 1;
+
+  // All countries — sharp pass
+  for (const f of countries.features) {
+    const id = String(f.id);
+    const lang = COUNTRY_LANG[id];
+    cCtx.beginPath();
+    colorPath(f as GeoPermissibleObjects);
+
+    if (lang) {
+      cCtx.fillStyle = LANG_FILL[lang];
+      cCtx.strokeStyle = LANG_STROKE[lang];
+      cCtx.lineWidth = 1.5;
+    } else {
+      cCtx.fillStyle = "#22c55e"; // bright green for all land
+      cCtx.strokeStyle = "#16a34a";
+      cCtx.lineWidth = 0.6;
+    }
+    cCtx.fill();
+    cCtx.stroke();
+  }
+
+  // ── Displacement texture ── (white = raised land, black = ocean)
+  const dispCanvas = document.createElement("canvas");
+  dispCanvas.width = w;
+  dispCanvas.height = h;
+  const dCtx = dispCanvas.getContext("2d")!;
+
+  // Ocean = black (no displacement)
+  dCtx.fillStyle = "#000000";
+  dCtx.fillRect(0, 0, w, h);
+
+  const dispPath = geoPath(proj, dCtx);
+
+  // Land = white (max displacement)
+  dCtx.fillStyle = "#ffffff";
+  for (const f of countries.features) {
+    dCtx.beginPath();
+    dispPath(f as GeoPermissibleObjects);
+    dCtx.fill();
+  }
+
+  // Slight blur to soften coastline transitions
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = w;
+  tempCanvas.height = h;
+  const tCtx = tempCanvas.getContext("2d")!;
+  tCtx.filter = "blur(3px)";
+  tCtx.drawImage(dispCanvas, 0, 0);
+
+  return { color: colorCanvas, displacement: tempCanvas };
+}
+
+// ── Flag texture (canvas drawn) ──
+
+function createFlagTex(code: string): THREE.CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = 150;
+  c.height = 100;
+  const ctx = c.getContext("2d")!;
+
+  switch (code) {
+    case "es":
+      ctx.fillStyle = "#c60b1e";
+      ctx.fillRect(0, 0, 150, 25);
+      ctx.fillStyle = "#ffc400";
+      ctx.fillRect(0, 25, 150, 50);
+      ctx.fillStyle = "#c60b1e";
+      ctx.fillRect(0, 75, 150, 25);
+      break;
+    case "fr":
+      ctx.fillStyle = "#002395";
+      ctx.fillRect(0, 0, 50, 100);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(50, 0, 50, 100);
+      ctx.fillStyle = "#ed2939";
+      ctx.fillRect(100, 0, 50, 100);
+      break;
+    case "de":
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(0, 0, 150, 33);
+      ctx.fillStyle = "#dd0000";
+      ctx.fillRect(0, 33, 150, 34);
+      ctx.fillStyle = "#ffcc00";
+      ctx.fillRect(0, 67, 150, 33);
+      break;
+    case "ja":
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, 150, 100);
+      ctx.fillStyle = "#bc002d";
+      ctx.beginPath();
+      ctx.arc(75, 50, 28, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    case "it":
+      ctx.fillStyle = "#009246";
+      ctx.fillRect(0, 0, 50, 100);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(50, 0, 50, 100);
+      ctx.fillStyle = "#ce2b37";
+      ctx.fillRect(100, 0, 50, 100);
+      break;
+    case "pt":
+      ctx.fillStyle = "#006600";
+      ctx.fillRect(0, 0, 60, 100);
+      ctx.fillStyle = "#ff0000";
+      ctx.fillRect(60, 0, 90, 100);
+      ctx.fillStyle = "#ffcc00";
+      ctx.beginPath();
+      ctx.arc(60, 50, 16, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+  }
+
+  const t = new THREE.CanvasTexture(c);
+  t.minFilter = THREE.LinearFilter;
+  return t;
+}
+
+// ── Wind shader ──
+
+const WIND_VERT = `
+  uniform float uTime;
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    vec3 p = position;
+    float inf = pow(uv.x, 1.5);
+    float t = uTime;
+    p.z += sin(t*3.0 + uv.x*8.0) * 0.07 * inf;
+    p.z += sin(t*5.5 + uv.x*13.0 + uv.y*5.0) * 0.03 * inf;
+    p.y += sin(t*2.5 + uv.x*7.0) * 0.015 * inf;
+    p.x += sin(t*1.8 + uv.x*4.0) * 0.01 * inf;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+  }
+`;
+
+const FLAG_FRAG = `
+  uniform sampler2D map;
+  varying vec2 vUv;
+  void main() {
+    vec4 c = texture2D(map, vUv);
+    float facing = gl_FrontFacing ? 1.0 : 0.8;
+    gl_FragColor = c * facing;
+  }
+`;
+
+// ── Atmosphere glow ──
+
+function Atmosphere() {
+  const mat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        vertexShader: `
+          varying vec3 vNormal;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);
+          }`,
+        fragmentShader: `
+          varying vec3 vNormal;
+          void main() {
+            float i = pow(0.6 - dot(vNormal, vec3(0,0,1)), 2.0);
+            gl_FragColor = vec4(0.3, 0.5, 1.0, 1.0) * i * 1.5;
+          }`,
+        transparent: true,
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+      }),
+    []
+  );
+  return (
+    <mesh material={mat}>
+      <icosahedronGeometry args={[RADIUS * 1.18, 16]} />
+    </mesh>
+  );
+}
+
+// ── Flag pin ──
+
+interface FlagPinProps {
+  code: string;
   lat: number;
   lng: number;
-  radius: number;
+  poleH: number;
   isSelected: boolean;
-  isHighlighted: boolean;
-  name: string;
-  flag: string;
   onClick: () => void;
 }
 
-function CityMarker({
-  lat,
-  lng,
-  radius,
-  isSelected,
-  isHighlighted,
-  onClick,
-}: CityMarkerProps) {
-  const pos = useMemo(
-    () => latLngToVector3(lat, lng, radius),
-    [lat, lng, radius]
+function FlagPin({ code, lat, lng, poleH, isSelected, onClick }: FlagPinProps) {
+  // Position flags on the raised land surface (RADIUS + EXTRUDE)
+  const surfacePos = useMemo(() => latLngToVec3(lat, lng, RADIUS + EXTRUDE), [lat, lng]);
+  const normal = useMemo(() => surfacePos.clone().normalize(), [surfacePos]);
+  const quat = useMemo(() => {
+    return new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      normal
+    );
+  }, [normal]);
+
+  const flagTex = useMemo(() => createFlagTex(code), [code]);
+  const flagMat = useMemo(
+    () =>
+      new THREE.ShaderMaterial({
+        uniforms: { map: { value: flagTex }, uTime: { value: 0 } },
+        vertexShader: WIND_VERT,
+        fragmentShader: FLAG_FRAG,
+        side: THREE.DoubleSide,
+        transparent: true,
+      }),
+    [flagTex]
   );
-  const meshRef = useRef<THREE.Mesh>(null);
-  const ringRef = useRef<THREE.Mesh>(null);
+
+  const groupRef = useRef<THREE.Group>(null);
   const [hovered, setHovered] = useState(false);
 
-  useFrame((_, delta) => {
-    if (ringRef.current) {
-      ringRef.current.rotation.z += delta * 1.5;
-    }
-    if (meshRef.current) {
-      const targetScale = hovered || isSelected ? 1.6 : isHighlighted ? 1.2 : 0.8;
-      meshRef.current.scale.lerp(
-        new THREE.Vector3(targetScale, targetScale, targetScale),
-        delta * 6
-      );
-    }
+  useFrame(({ clock }) => {
+    flagMat.uniforms.uTime.value = clock.getElapsedTime();
   });
 
-  const color = isSelected ? "#ffffff" : isHighlighted ? "#e2e8f0" : "#64748b";
+  // Always render — no visibility culling
+  const fw = 0.18;
+  const fh = 0.12;
 
   return (
-    <group position={pos}>
+    <group ref={groupRef} position={surfacePos} quaternion={quat}>
+      {/* Pole */}
+      <mesh position={[0, poleH / 2, 0]}>
+        <cylinderGeometry args={[0.006, 0.006, poleH, 6]} />
+        <meshBasicMaterial color={isSelected || hovered ? "#ffffff" : "#d4d4d8"} />
+      </mesh>
+
+      {/* Flag cloth */}
       <mesh
-        ref={meshRef}
+        material={flagMat}
+        position={[fw / 2 + 0.003, poleH - fh / 2 - 0.005, 0]}
         onClick={(e) => {
           e.stopPropagation();
           onClick();
@@ -97,157 +389,190 @@ function CityMarker({
           document.body.style.cursor = "auto";
         }}
       >
-        <sphereGeometry args={[0.03, 16, 16]} />
-        <meshBasicMaterial color={color} />
+        <planeGeometry args={[fw, fh, 24, 14]} />
       </mesh>
-      {(isSelected || isHighlighted) && (
-        <mesh ref={ringRef} rotation={[Math.PI / 2, 0, 0]}>
-          <ringGeometry args={[0.05, 0.065, 32]} />
-          <meshBasicMaterial
-            color={isSelected ? "#ffffff" : "#94a3b8"}
-            transparent
-            opacity={isSelected ? 0.9 : 0.5}
-            side={THREE.DoubleSide}
-          />
-        </mesh>
-      )}
+
+      {/* Invisible click target — larger hit area around the flag */}
+      <mesh
+        position={[fw / 2, poleH * 0.6, 0]}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHovered(true);
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={() => {
+          setHovered(false);
+          document.body.style.cursor = "auto";
+        }}
+      >
+        <boxGeometry args={[fw * 1.6, poleH * 0.8, 0.06]} />
+        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+      </mesh>
+
+      {/* Pole cap */}
+      <mesh position={[0, poleH + 0.008, 0]}>
+        <sphereGeometry args={[0.01, 8, 8]} />
+        <meshBasicMaterial
+          color={isSelected ? "#60a5fa" : "#e4e4e7"}
+        />
+      </mesh>
+
+      {/* Base glow */}
+      <pointLight
+        position={[0, 0.02, 0]}
+        color={isSelected ? "#60a5fa" : "#ffffff"}
+        intensity={isSelected || hovered ? 0.5 : 0.15}
+        distance={0.35}
+      />
     </group>
   );
 }
+
+// ── Globe mesh ──
 
 interface GlobeMeshProps {
   selectedLanguageCode: string | null;
-  selectedCityId: string | null;
-  onCityClick: (languageCode: string, cityId: string) => void;
+  onLanguageClick: (code: string) => void;
+  zoomTarget: { lat: number; lng: number } | null;
 }
 
-function GlobeMesh({
-  selectedLanguageCode,
-  selectedCityId,
-  onCityClick,
-}: GlobeMeshProps) {
+function GlobeMesh({ selectedLanguageCode, onLanguageClick, zoomTarget }: GlobeMeshProps) {
   const groupRef = useRef<THREE.Group>(null);
-  const radius = 1.8;
+  const earthRef = useRef<THREE.Mesh>(null);
+  const { camera } = useThree();
+  const userDragging = useRef(false);
 
-  const dotPositions = useMemo(() => generateGlobeDots(3000, radius), [radius]);
+  // Disable raycasting on earth mesh so flags can be clicked
+  useEffect(() => {
+    if (earthRef.current) {
+      earthRef.current.raycast = () => {};
+    }
+  }, []);
 
-  useFrame((_, delta) => {
-    if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.08;
+  const { earthTex, dispTex } = useMemo(() => {
+    const { color, displacement } = createEarthTextures(2048, 1024);
+    const ct = new THREE.CanvasTexture(color);
+    ct.minFilter = THREE.LinearFilter;
+    const dt = new THREE.CanvasTexture(displacement);
+    dt.minFilter = THREE.LinearFilter;
+    return { earthTex: ct, dispTex: dt };
+  }, []);
+
+  const zoomStart = useRef<number | null>(null);
+
+  useFrame(({ clock }, delta) => {
+    if (!groupRef.current) return;
+
+    if (zoomTarget) {
+      // ── Zoom transition — OrbitControls disabled, safe to touch camera ──
+      if (zoomStart.current === null) zoomStart.current = clock.getElapsedTime();
+      const elapsed = clock.getElapsedTime() - zoomStart.current;
+      const t = Math.min(elapsed / 1.0, 1);
+      const ease = 1 - Math.pow(1 - t, 3);
+
+      const targetY = lngToRotY(zoomTarget.lng);
+      const diff = angleDiff(groupRef.current.rotation.y, targetY);
+      groupRef.current.rotation.y += diff * Math.min(ease * 5 * delta, 0.15);
+
+      camera.position.z += (2.2 - camera.position.z) * ease * delta * 4;
+    } else {
+      zoomStart.current = null;
+      // ── Normal mode — only touch group rotation, NEVER the camera ──
+      if (!userDragging.current) {
+        groupRef.current.rotation.y += delta * 0.08;
+      }
     }
   });
 
-  const cities = useMemo(() => {
-    const result: Array<{
-      languageCode: string;
-      cityId: string;
-      name: string;
-      flag: string;
-      lat: number;
-      lng: number;
-    }> = [];
-    for (const lang of LANGUAGES) {
-      for (const city of lang.cities) {
-        result.push({
-          languageCode: lang.code,
-          cityId: city.id,
-          name: city.name,
-          flag: lang.flag,
-          lat: city.lat,
-          lng: city.lng,
-        });
-      }
-    }
-    return result;
-  }, []);
-
-  const dotGeometry = useMemo(() => {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute(
-      "position",
-      new THREE.BufferAttribute(dotPositions, 3)
-    );
-    return geo;
-  }, [dotPositions]);
-
   return (
-    <group ref={groupRef}>
-      {/* Globe dots */}
-      <points geometry={dotGeometry}>
-        <pointsMaterial
-          color="#94a3b8"
-          size={0.015}
-          sizeAttenuation
-          transparent
-          opacity={0.6}
-        />
-      </points>
+    <>
+      <group ref={groupRef}>
+        {/* Earth — low-poly faceted with raised continents */}
+        <mesh ref={earthRef}>
+          <icosahedronGeometry args={[RADIUS, GEO_DETAIL]} />
+          <meshStandardMaterial
+            map={earthTex}
+            displacementMap={dispTex}
+            displacementScale={EXTRUDE}
+            flatShading
+            roughness={0.75}
+            metalness={0.05}
+            emissive="#0f172a"
+            emissiveIntensity={0.2}
+          />
+        </mesh>
 
-      {/* Equator & meridian rings for subtle structure */}
-      <mesh rotation={[Math.PI / 2, 0, 0]}>
-        <ringGeometry args={[radius - 0.002, radius + 0.002, 128]} />
-        <meshBasicMaterial
-          color="#334155"
-          transparent
-          opacity={0.35}
-          side={THREE.DoubleSide}
-        />
-      </mesh>
+        {/* Atmosphere */}
+        <Atmosphere />
 
-      {/* City markers */}
-      {cities.map((city) => (
-        <CityMarker
-          key={`${city.languageCode}-${city.cityId}`}
-          lat={city.lat}
-          lng={city.lng}
-          radius={radius + 0.01}
-          name={city.name}
-          flag={city.flag}
-          isHighlighted={selectedLanguageCode === city.languageCode}
-          isSelected={
-            selectedLanguageCode === city.languageCode &&
-            selectedCityId === city.cityId
-          }
-          onClick={() => onCityClick(city.languageCode, city.cityId)}
-        />
-      ))}
-    </group>
+        {/* Flags — always rendered */}
+        {FLAG_PINS.map((fp) => (
+          <FlagPin
+            key={fp.code}
+            code={fp.code}
+            lat={fp.lat}
+            lng={fp.lng}
+            poleH={fp.poleH}
+            isSelected={selectedLanguageCode === fp.code}
+            onClick={() => onLanguageClick(fp.code)}
+          />
+        ))}
+      </group>
+
+      <OrbitControls
+        enableZoom={false}
+        enablePan={false}
+        rotateSpeed={0.5}
+        enableDamping
+        dampingFactor={0.08}
+        minPolarAngle={Math.PI * 0.15}
+        maxPolarAngle={Math.PI * 0.85}
+        enabled={!zoomTarget}
+        onStart={() => {
+          userDragging.current = true;
+        }}
+        onEnd={() => {
+          userDragging.current = false;
+        }}
+      />
+    </>
   );
 }
 
+// ── Public component ──
+
 interface GlobeProps {
   selectedLanguageCode: string | null;
-  selectedCityId: string | null;
-  onCityClick: (languageCode: string, cityId: string) => void;
+  onLanguageClick: (code: string) => void;
+  zoomTarget?: { lat: number; lng: number } | null;
   className?: string;
 }
 
 export function Globe({
   selectedLanguageCode,
-  selectedCityId,
-  onCityClick,
+  onLanguageClick,
+  zoomTarget = null,
   className = "",
 }: GlobeProps) {
   return (
-    <div className={className}>
+    <div className={className} style={{ aspectRatio: "1 / 1" }}>
       <Canvas
-        camera={{ position: [0, 0, 4.5], fov: 45 }}
+        camera={{ position: [0, 0, 3.8], fov: 45 }}
         style={{ background: "transparent" }}
         gl={{ antialias: true, alpha: true }}
       >
         <ambientLight intensity={0.5} />
+        <directionalLight position={[5, 3, 5]} intensity={1.2} color="#ffffff" />
+        <directionalLight position={[-3, -2, 4]} intensity={0.4} color="#93c5fd" />
+        <directionalLight position={[0, 5, -3]} intensity={0.3} color="#a5b4fc" />
         <GlobeMesh
           selectedLanguageCode={selectedLanguageCode}
-          selectedCityId={selectedCityId}
-          onCityClick={onCityClick}
-        />
-        <OrbitControls
-          enableZoom={false}
-          enablePan={false}
-          rotateSpeed={0.4}
-          autoRotate={false}
-          minPolarAngle={Math.PI * 0.3}
-          maxPolarAngle={Math.PI * 0.7}
+          onLanguageClick={onLanguageClick}
+          zoomTarget={zoomTarget}
         />
       </Canvas>
     </div>

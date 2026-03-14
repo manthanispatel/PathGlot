@@ -79,6 +79,66 @@
   transform-origin: top;
 }
 
+/* ── GTA transition ── */
+
+.gta-transition {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  pointer-events: none;
+  background: radial-gradient(circle at center, transparent 0%, black 70%);
+  animation: gtaZoom 1.4s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+@keyframes gtaZoom {
+  0% {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+    background: radial-gradient(circle at center, transparent 60%, rgba(0, 0, 0, 0.3) 100%);
+  }
+  25% {
+    opacity: 1;
+    backdrop-filter: blur(2px);
+    background: radial-gradient(circle at center, transparent 30%, rgba(0, 0, 0, 0.7) 100%);
+  }
+  50% {
+    backdrop-filter: blur(8px);
+    background: radial-gradient(circle at center, transparent 5%, rgba(0, 0, 0, 0.95) 60%);
+  }
+  75% {
+    backdrop-filter: blur(12px);
+    background: black;
+  }
+  100% {
+    backdrop-filter: blur(0px);
+    background: black;
+    opacity: 1;
+  }
+}
+
+/* ── Session enter (fade from black) ── */
+
+.session-enter-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: black;
+  animation: sessionFadeIn 1.5s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes sessionFadeIn {
+  0% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.8;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
 /* ── Jarvis HUD ── */
 
 .hud-message {
