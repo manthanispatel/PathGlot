@@ -17,6 +17,7 @@ interface SessionConfig {
 export default function App() {
   const [config, setConfig] = useState<SessionConfig | null>(null);
   const [showLog, setShowLog] = useState(false);
+  const [enteringSession, setEnteringSession] = useState(false);
 
   // Derived from config
   const language: Language | undefined = config
@@ -77,7 +78,10 @@ export default function App() {
     cityId: string,
     guideName: string
   ) {
+    setEnteringSession(true);
     setConfig({ languageCode, cityId, guideName });
+    // Fade out the black overlay after session loads
+    setTimeout(() => setEnteringSession(false), 1500);
   }
 
   // Auto-connect to Gemini and start mic when entering session
@@ -128,6 +132,10 @@ export default function App() {
   // Main session view
   return (
     <div className="h-screen flex flex-col bg-[#09090b] overflow-hidden">
+      {/* Session enter overlay — fades from black */}
+      {enteringSession && (
+        <div className="session-enter-overlay" />
+      )}
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-2 bg-black/60 backdrop-blur-sm border-b border-zinc-800 z-10 shrink-0">
         <div className="flex items-center gap-3">
